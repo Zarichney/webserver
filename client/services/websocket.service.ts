@@ -1,5 +1,4 @@
 import { Injectable } from '@angular/core';
-import { AppComponent } from 'client/components/app/app.component';
 import { Observable } from 'rxjs';
 import io, { Socket } from 'socket.io-client';
 
@@ -37,7 +36,6 @@ export class WebsocketService {
 		this.connect();
 
 	}
-
 
 	private log(msg: string, obj?: any): void {
 		if (this.enableLogging) {
