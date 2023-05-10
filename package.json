@@ -1,5 +1,5 @@
 {
-  "name": "worldvoice",
+  "name": "webserver",
   "version": "0.0.0",
   "description": "node server",
   "main": "index.js",
@@ -8,14 +8,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Zarichney/worldvoice.git"
+    "url": "git+https://github.com/Zarichney/webserver.git"
   },
   "author": "Zarichney",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/Zarichney/worldvoice/issues"
+    "url": "https://github.com/Zarichney/webserver/issues"
   },
-  "homepage": "https://github.com/Zarichney/worldvoice#readme",
+  "homepage": "https://github.com/Zarichney/webserver#readme",
   "dependencies": {
     "@angular/animations": "^15.2.0",
     "@angular/common": "^15.2.0",
