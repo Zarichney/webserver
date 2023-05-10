@@ -1,0 +1,16 @@
+How you can generate a self-signed SSL certificate:
+
+Open a terminal or command prompt on your server.
+
+Generate a private key using the following command:
+	`openssl genrsa -out server/ssl/server.key 2048`
+
+Next, generate a certificate signing request (CSR) using the following command:
+	`openssl req -new -key server/ssl/server.key -out server/ssl/server.csr`
+During this step, you will be prompted to enter information about your server, such as the Common Name (CN) for the certificate. This should be the domain name that you want to use the SSL certificate for.
+
+Once you have generated the CSR, you can use it to generate a self-signed SSL certificate using the following command:
+	`openssl x509 -req -days 365 -in server/ssl/server.csr -signkey server/ssl/server.key -out server/ssl/server.crt`
+This will create a self-signed SSL certificate that is valid for 365 days.
+
+You should now have three files in your directory: server.key, server.csr, and server.crt. The server.key file is your private key, the server.csr file is your certificate signing request, and the server.crt file is your self-signed SSL certificate.
