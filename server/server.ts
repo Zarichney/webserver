@@ -3,7 +3,7 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import apiRouter from './api';
 import WebSocket from 'ws';
-import { createWebsocketServer } from 'services/websocket.service';
+import { WebSocketService } from './services/websocket.service';
 
 const app = express();
 const https = require('https');
@@ -51,31 +51,5 @@ server.listen(444, () => {
   console.log('Server listening on port 444');
 });
 
-// Websocket:
-
-const io = socketIO(server, {
-  cors: {
-    origin: "https://localhost",
-    methods: ["GET", "POST"]
-  }
-});
-
-// Define a socket.io event handler
-io.on('connection', (socket: WebSocket.WebSocket) => {
-  console.log('a user connected');
-
-  // Emit a message to the client when it connects
-  socket.emit('message', 'Hello, client!');
-
-  // Listen for a message event from the client and log the message
-  socket.on('message', (message: any) => {
-    console.log('Received message from client:', message);
-  });
-
-  // Handle disconnections
-  socket.on('disconnect', () => {
-    console.log('user disconnected');
-  });
-});
-
+const wss = new WebSocketService(server);
 

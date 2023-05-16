@@ -1,19 +1,31 @@
 import { Injectable } from '@angular/core';
-import { Observable } from 'rxjs';
-import io, { Socket } from 'socket.io-client';
+import { WebSocketMessage } from '../../server/models/websocket.message';
+
+type ErrorHandlerType = (...args: any[]) => any;
 
 class ServiceConsumer {
 	// Array of callback events to run when the server calls the client event name
 	registeredEvents: Map<string, Function> = new Map();
+	public id!: string;
+
+	constructor(subscriberID: string) {
+		this.id = subscriberID;
+	}
 
 	public addEvent(eventName: string, eventCallback: Function) {
-		if (!this.registeredEvents.has(eventName))
-			this.registeredEvents.set(eventName, eventCallback);
+		if (this.registeredEvents.has(eventName))
+			return false;
+
+		this.registeredEvents.set(eventName, eventCallback);
+		return true;
 	}
 
 	public removeEvent(eventName: string) {
-		if (this.registeredEvents.has(eventName))
-			this.registeredEvents.delete(eventName);
+		if (!this.registeredEvents.has(eventName))
+			return false;
+
+		this.registeredEvents.delete(eventName);
+		return true;
 	}
 }
 
@@ -21,119 +33,282 @@ class ServiceConsumer {
 	providedIn: 'root'
 })
 export class WebsocketService {
-	private socket!: Socket;
-	private readonly url: string = 'https://localhost:444';
+	private socket!: WebSocket;
+	private readonly url: string = 'wss://localhost:444';
+	private latestSubscriberID!: string;
 	private connected: boolean = false;
-
-	private enableVerbose: boolean = false;
-	private enableLogging: boolean = false;
+	private connectionAttempts: number = 0;
 
 	// Holds in memory all the components that are currently using the websocket service
 	// And collection of scope objects using scopeID as the key
-	private consumers: Map<string, ServiceConsumer> = new Map();
+	private subscribers: Map<string, ServiceConsumer> = new Map();
+
+	// Keeps track of whether an event name is registered already
+	private registeredEvents: string[] = [];
+
+	private enableVerbose: boolean = false; // Turn this on to see all service activity
+	private enableLogging: boolean = true;  // Turn this on to log major service activity
+	private throwErrors: boolean = true;    // Turn this on for troubleshooting
 
 	constructor() {
-		this.connect();
-
-	}
-
-	private log(msg: string, obj?: any): void {
-		if (this.enableLogging) {
-			if (obj) console.log(msg, obj);
-			else console.log(msg);
+		if (this.enableVerbose) {
+			this.enableLogging = true;
+			this.throwErrors = true;
 		}
+
+		this.start();
 	}
 
 	private verbose(msg: string, obj?: any): void {
 		if (this.enableVerbose) {
+			// console.log("My socket client", this.socket); // for deep troubleshooting
+			this.log(msg, obj);
+		}
+	}
+
+	private log(msg: string, obj?: any): void {
+		if (this.enableLogging) {
+			msg = "Websocket Service >> " + msg;
 			if (obj) console.log(msg, obj);
 			else console.log(msg);
 		}
 	}
 
-	private error(msg: string, ex?: Error): void {
-		if (ex) console.error(msg, ex);
-		else console.error(msg);
+	private error(msg: string, ex?: Error | Event) {
+		if (ex) {
+			console.error(msg, ex);
+			if (ex instanceof Error)
+				console.error(ex.stack);
+			if (this.throwErrors)
+				throw ex;
+		}
+		else {
+			console.error(msg);
+			if (this.throwErrors)
+				throw new Error(msg);
+		}
 	}
 
+	private handleError: ErrorHandlerType = (err: Error) => {
+		this.error(err.message, err);
+	};
+
+	private errorHandler = (handler: ErrorHandlerType): ErrorHandlerType => {
+
+		return (...args: any[]) => {
+			try {
+				const ret = handler.apply(this, args);
+				if (ret && typeof ret.catch === "function") {
+					// async handler
+					ret.catch(this.handleError);
+				}
+			} catch (e: any) {
+				// sync handler
+				this.handleError(e);
+			}
+		};
+	};
+
+	private start(): void {
+
+		if (this.socket && this.connected) {
+			this.verbose('Disconnecting from server');
+			this.socket.close();
+		}
+
+		this.verbose("Initiating connecting to server...");
+
+		this.socket = new WebSocket(this.url);
+
+		this.socket.onopen = this.errorHandler(this.connect);
+		this.socket.onerror = (error) => {
+			this.error("Socket error", error);
+		};
+		this.socket.onclose = this.errorHandler(this.disconnect);
+		this.socket.onmessage = this.errorHandler(this.messageHandler);
+
+	}
+
+	private reconnect(): void {
+
+		// randomize a delayed reconnect to avoid server overload between 0.5s and 1 second
+		this.connectionAttempts += 1;
+		let attempt = this.connectionAttempts;
+
+		let delay: number;
+
+		if (attempt < 3) {
+			delay = Math.random() * 500; // 0 to 0.5 seconds
+		} else if (attempt < 6) {
+			delay = Math.random() * 2500 + 500; // 0.5 to 3 seconds
+		} else if (attempt < 10) {
+			delay = Math.random() * 5000 + 5000; // 5 to 10 seconds
+		} else {
+			delay = 60000; // 1 minute
+		}
+
+		setTimeout(() => {
+			this.start();
+		}, delay);
+
+	}
 
 	private connect(): void {
-		this.socket = io(this.url);
+
+		this.connected = true;
+		this.connectionAttempts = 0;
+
+		this.log("Connected to server", this.connected);
+
+		this.RegisterAllEvents();
 
 	}
 
-	private disconnect(): void {
-		this.socket.disconnect();
+	private disconnect(event: CloseEvent): void {
+
+		if (this.connected) {
+			this.verbose('Disconnecting from server');
+			this.socket.close();
+		}
+
+		this.log("Disconnected from server", event);
+		this.connected = false;
+
+		this.reconnect();
+
 	}
 
-	public Subscribe(consumerID: string) {
-
-		let scope = new ServiceConsumer();
-		this.consumers.set(consumerID, scope);
-
-		return scope;
-	}
-
-	// public sendMessage(message: string): void {
-	// 	this.socket.emit('message', message);
-	// }
-
-	public getMessages(): Observable<string> {
-		return new Observable<string>(observer => {
-			this.socket.on('message', (data: string) => {
-				observer.next(data);
-			});
-			return () => {
-				this.socket.disconnect();
-			};
-		});
-	}
-
-	// Used to register a callback to run when the server calls the client event name
-	public When(consumerID: string, eventName: string, callback: Function) {
-
-		if (eventName && callback) {
-
-			this.RegisterEvent(eventName, callback, consumerID);
-
+	public send(eventName: string, data: any): void {
+		try {
+			let message = new WebSocketMessage<any>(eventName, data);
+			this.socket.send(JSON.stringify({ eventName, data }));
+		} catch (ex: any) {
+			this.error("emit error", ex);
 		}
 	}
 
-	// When an event name is registered, the callback will execute when the server calls it
-	RegisterEvent(eventName: string, callback: Function, consumerID?: string): boolean | Error {
+	// Todo: add onConnectCallback and onDisconnectCallback as parameters
+	public Subscribe(subscriberID: string): WebsocketService {
 
-		if (consumerID) {
-			this.verbose(`Registering event ${eventName} for consumer ${consumerID}`);
-
-			let scope: ServiceConsumer | undefined;
-			if (this.consumers.has(consumerID)) {
-				scope = this.consumers.get(consumerID);
-				if (!scope) throw new Error();
-			} else {
-				scope = this.Subscribe(consumerID);
-			}
-			scope.addEvent(eventName, callback);
+		if (!subscriberID) {
+			// Without the scope, callback couldn't get automatically deregistered
+			// when the scope is disposed (aka controller no longer being used)
+			this.error("Service requires an ID to register consumer callbacks");
 		}
 
-		if (!this.connected) {
-			// If the socket is not connected, the registry will occur during reconnection
-			this.error(`Cannot register event ${eventName} because the socket is not connected`);
+		let scope = new ServiceConsumer(subscriberID);
+
+		// Internally store service consumer to auto handle:
+		//	- unregistration of callbacks during scope disposal, or
+		//  - re-registrations of callbacks during reconnection to server
+		this.subscribers.set(subscriberID, scope);
+
+		// Temporarily set this to use during the registration of events
+		this.latestSubscriberID = subscriberID;
+
+		this.log(`New service consumer`, subscriberID);
+
+		return this;
+	}
+
+	public Unsubscribe(subscriberID: string): boolean {
+
+		this.verbose("Unsubscribing service consumer", subscriberID);
+
+		if (!subscriberID) {
+			this.error("Service consumer ID not provided");
 			return false;
 		}
 
-		this.socket.on(eventName, (data: any) => {
-			this.verbose(`Received ${eventName}`, data);
-			if (!this.connected) {
-				this.error(`Cannot execute ${eventName} because the socket is not connected`);
-			} else {
-				this.verbose(`Executing callback for ${eventName}`);
-				try {
-					callback(data);
-				} catch (error: any) { this.error(`Callback error in ${eventName}`, error); }
-			}
-		});
+		if (!this.subscribers.has(subscriberID)){
+			this.error(`Consumer with ID ${subscriberID} is not currently subscribed`);
+			return false;
+		}
 
-		this.verbose(`Registered callback for event ${eventName}`, callback);
+		let consumer = this.subscribers.get(subscriberID);
+		if (!consumer) throw new Error();
+
+		for (let eventName of consumer.registeredEvents.keys()) {
+			this.UnregisterEvent(eventName, subscriberID);
+		}
+
+		this.subscribers.delete(subscriberID);
+		this.log(`Service consumer unsubscribed`, subscriberID);
+
+		return true;
+	}
+
+
+	// Used to register a callback to run when the server calls the client event name
+	public On(eventName: string, callback: Function) {
+
+		if (!eventName) {
+			this.error("Event name not provided");
+			return;
+		}
+
+		if (!callback) {
+			this.error("Callback not provided");
+			return;
+		}
+
+		return this.RegisterEvent(eventName, callback, this.latestSubscriberID);
+	}
+
+	// When an event name is registered, the callback will execute when the server calls it
+	private RegisterEvent(eventName: string, callback: Function, subscriberID?: string): boolean {
+
+		if (subscriberID) {
+			this.verbose(`Registering event '${eventName}' for consumer ${subscriberID}`);
+
+			let subscriber: ServiceConsumer | undefined;
+			if (!this.subscribers.has(subscriberID)) {
+				this.Subscribe(subscriberID);
+			}
+			subscriber = this.subscribers.get(subscriberID);
+			if (!subscriber) throw new Error();
+
+			if (subscriber.addEvent(eventName, callback))
+				this.verbose(`Registered callback for event '${eventName}'`, callback);
+		}
+
+		// Check if event is already registered
+		if (this.registeredEvents.includes(eventName)) {
+			this.verbose(`Event ${eventName} is already registered`);
+			return true;
+		}
+
+		this.registeredEvents.push(eventName);
+		this.verbose(`Registered event name '${eventName}'`);
+
+		return true;
+	}
+
+	private messageHandler(event: MessageEvent) {
+
+		let message: WebSocketMessage<any> = JSON.parse(event.data);
+		this.log(`Received from server event '${message.eventName}'`);
+
+		if (!this.connected) {
+			this.error(`Cannot register event '${message.eventName}' because the socket is not connected`);
+			return false;
+		}
+
+		// Iterate over all service consumers and run the callback for all that are registered for this event
+		for (let consumer of this.subscribers.values()) {
+			if (consumer.registeredEvents.has(message.eventName)) {
+				let consumerCallback = consumer.registeredEvents.get(message.eventName);
+				if (consumerCallback) {
+					this.verbose(`Executing callback for consumer ${consumer.id}`, consumerCallback);
+					try{
+						consumerCallback(message.data);
+					} catch (ex: any) {
+						this.error("Consumer callback error", ex);
+					}
+				}
+			}
+		}
+
 		return true;
 	}
 
@@ -145,37 +320,46 @@ export class WebsocketService {
 			return false;
 		}
 
-		let success: boolean = true;
-		this.verbose(`Registering all events`);
-		for (let consumer of this.consumers.values()) {
-			for (let [event, callback] of consumer.registeredEvents) {
-				if (!this.RegisterEvent(event, callback)) {
-					success = false;
-				}
-			}
-		}
-		return success;
-	}
-
-	// Unregistered all callback with the hub connection
-	private UnregisterAllEvents(): boolean {
-
-		if (!this.connected) {
-			this.error(`Cannot unregister events because the socket is not connected`);
+		if (this.subscribers.size == 0) {
 			return false;
 		}
 
+		this.log(`Registering all events`);
+
 		let success: boolean = true;
-		this.verbose(`Unregistering all events`);
-		for (let consumer of this.consumers.values()) {
-			for (let event of consumer.registeredEvents.keys()) {
-				this.socket.off(event);
-				consumer.removeEvent(event);
+		for (let consumer of this.subscribers.values()) {
+			for (let [event, callback] of consumer.registeredEvents) {
+				if (!this.RegisterEvent(event, callback)) {
+					success = false;
+					this.error(`Cannot register event ${event} for consumer ${consumer.id}`);
+				}
 			}
 		}
+
 		return success;
 	}
 
+	private UnregisterEvent(event: string, subscriberID?: string): boolean {
+
+		if (subscriberID && this.subscribers.has(subscriberID)) {
+			let consumer = this.subscribers.get(subscriberID);
+			if (!consumer) throw new Error();
+			consumer.removeEvent(event);
+		}
+
+		// Remove from the list of registered events only if no other service consumer is registered for the same event
+		for (let consumer of this.subscribers.values()) {
+
+			if (consumer.registeredEvents.has(event)) {
+				// Another service consumer is also subscribed to the same event: no need to unregister
+				return true;
+			}
+		}
+
+		this.registeredEvents = this.registeredEvents.filter(e => e != event);
+
+		return true;
+	}
 }
 
 

@@ -1,21 +1,41 @@
 import WebSocket from 'ws';
+import { WebSocketMessage } from '../models/websocket.message';
 
-export function createWebsocketServer(server: any): WebSocket.Server {
-  const wss = new WebSocket.Server({ server });
+export class WebSocketService {
+	private clients: Set<WebSocket>;
 
-  wss.on('connection', (socket: WebSocket) => {
-    console.log('a user connected');
+	constructor(private server: any) {
+		this.clients = new Set<WebSocket>();
+		this.start();
+	}
 
-    socket.send('Hello, client!');
+	public start(): WebSocket.Server {
+		const wss = new WebSocket.Server({ server: this.server });
 
-    socket.on('message', (message: string) => {
-      console.log('Received message from client:', message);
-    });
+		wss.on('connection', (socket: WebSocket) => {
+			console.log('a user connected');
+			this.clients.add(socket);
 
-    socket.on('close', () => {
-      console.log('user disconnected');
-    });
-  });
+			this.send("someServerSideEventName", "Hello, client!");
 
-  return wss;
+			socket.on('message', (message: string) => {
+				console.log('Received message from client:', message);
+			});
+
+			socket.on('close', () => {
+				console.log('user disconnected');
+				this.clients.delete(socket);
+			});
+		});
+
+		return wss;
+	}
+
+	private send(eventName: string, data: any) {
+		this.clients.forEach((client: WebSocket) => {
+			if (client.readyState === WebSocket.OPEN) {
+				client.send(JSON.stringify(new WebSocketMessage(eventName, data)));
+			}
+		});
+	}
 }
